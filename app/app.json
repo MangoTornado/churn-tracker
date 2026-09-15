@@ -9,6 +9,7 @@
     "newArchEnabled": true,
     "backgroundColor": "#17161C",
     "splash": {
+      "image": "./assets/splash-icon.png",
       "backgroundColor": "#17161C",
       "resizeMode": "contain"
     },
@@ -17,18 +18,20 @@
       "bundleIdentifier": "tw.asu.churntracker",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "icon": "./assets/icon.png"
     },
     "android": {
       "package": "tw.asu.churntracker",
-      "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#17161C"
       }
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "static",
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
@@ -38,10 +41,12 @@
         {
           "color": "#B9A0F5"
         }
-      ]
+      ],
+      "./plugins/with-release-signing"
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "icon": "./assets/icon.png"
   }
 }

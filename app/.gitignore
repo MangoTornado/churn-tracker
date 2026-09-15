@@ -4,3 +4,13 @@ dist/
 web-build/
 *.log
 .DS_Store
+
+# Generated native projects. Expo regenerates these from app.json and the config plugins on every
+# prebuild, so committing them means committing something that will be overwritten — see
+# plugins/with-release-signing.js for how the signing config survives regeneration instead.
+/android/
+/ios/
+
+# The release keystore and its password. Losing this means never being able to update the app for
+# anyone who installed it, so back it up somewhere that is not this repo.
+/credentials/
