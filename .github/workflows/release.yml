@@ -1,0 +1,197 @@
+name: Release
+
+# Cut a release by pushing a tag:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Builds a signed Android APK and the static web bundle, and publishes both to a GitHub release. The
+# version name comes from the tag and the version code from the run number, so every release installs
+# over the last one.
+#
+# Needs four repository secrets — see docs/RELEASING.md:
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#
+# iOS is not here. A distributable iOS build needs an Apple Developer account and provisioning
+# profiles that cannot be checked into a public repo, so it is a local `make ios-archive` — see
+# docs/RELEASING.md. Pretending otherwise with a job that always fails would be worse than the gap.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version name, e.g. 0.2.0 (no leading v)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP needs 17+; 21 is what the project is developed against.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # ubuntu-latest ships an Android SDK but not necessarily the platform this project compiles
+      # against, and AGP will not fetch it on its own.
+      - name: Install the Android platform and build tools
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NAME="${{ github.event.inputs.version }}"
+          else
+            NAME="${GITHUB_REF_NAME#v}"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          # Monotonic across every run, which is all Android asks of a version code. Not derived from
+          # the version name: 0.10.0 sorts below 0.9.0 under any scheme that tries.
+          echo "code=$(( 1000 + GITHUB_RUN_NUMBER ))" >> "$GITHUB_OUTPUT"
+
+      # Before anything expensive. A release built from code that does not pass its own tests is worse
+      # than no release, because it is the version people will have installed.
+      - name: Test and typecheck
+        run: |
+          make typecheck
+          npm test
+        env:
+          TZ: UTC
+
+      - name: Install the app's dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Typecheck the app
+        working-directory: app
+        run: npx tsc --noEmit
+
+      - name: Restore the signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. See docs/RELEASING.md."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # A truncated secret decodes to something keytool will reject much later, with an error about
+          # the keystore format rather than about the secret. Fail here instead.
+          test -s "$RUNNER_TEMP/release.jks"
+
+      # `--no-install` because `npm ci` already ran, and prebuild would otherwise redo it with
+      # `npm install` and drift from the lockfile.
+      - name: Generate the native Android project
+        working-directory: app
+        env:
+          EXPO_NO_TELEMETRY: '1'
+        run: npx expo prebuild --platform android --clean --no-install
+
+      # Proves the config plugin actually did its job. Without this the build would happily produce an
+      # APK signed with Android's universally-known debug key, and the only sign would be a line in a
+      # log nobody reads.
+      - name: The signing config was injected
+        working-directory: app
+        run: |
+          grep -q 'churn-tracker: release signing' android/app/build.gradle \
+            || { echo "::error::plugins/with-release-signing.js did not inject into build.gradle"; exit 1; }
+          grep -q 'ctHasKeystore ? signingConfigs.release' android/app/build.gradle \
+            || { echo "::error::the release build type is still pointing at the debug signing config"; exit 1; }
+
+      - name: Assemble the signed release
+        working-directory: app/android
+        env:
+          CT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CT_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CT_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export CT_ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          ./gradlew assembleRelease \
+            -PversionName='${{ steps.version.outputs.name }}' \
+            -PversionCode='${{ steps.version.outputs.code }}' \
+            --no-daemon
+          mv app/build/outputs/apk/release/app-release.apk \
+             "$GITHUB_WORKSPACE/churn-tracker-${{ steps.version.outputs.name }}.apk"
+
+      - name: Verify it really is signed, and not with the debug key
+        run: |
+          APK="churn-tracker-${{ steps.version.outputs.name }}.apk"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" | tee certs.txt
+          # Android's debug certificate is always CN=Android Debug. Shipping one would mean nobody can
+          # ever install an update over it from a different key, and it is trivially forgeable.
+          if grep -qi 'CN=Android Debug' certs.txt; then
+            echo "::error::this APK is signed with the debug key"
+            exit 1
+          fi
+
+      - name: Delete the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" certs.txt
+
+      # Shipped alongside the APK so the web app can be self-hosted without Docker, and so there is an
+      # artefact to diff when a deploy looks wrong.
+      - name: Build the web bundle
+        working-directory: app
+        run: |
+          npx expo export --platform web --output-dir dist
+          cd dist && zip -qr "$GITHUB_WORKSPACE/churn-tracker-web-${{ steps.version.outputs.name }}.zip" .
+
+      - name: Write the release notes
+        run: |
+          NOTES=docs/release-notes/v${{ steps.version.outputs.name }}.md
+          if [ -f "$NOTES" ]; then
+            cp "$NOTES" release-notes.md
+          else
+            # A tag with no notes file still releases, with an honest placeholder rather than an empty
+            # body — but say so in the log so it can be fixed.
+            echo "::warning::$NOTES does not exist; publishing generated notes only"
+            printf '### Changes\n\nSee the commit log below.\n' > release-notes.md
+          fi
+          {
+            printf '\n---\n\n'
+            printf '**Android:** download the APK and open it. Android will ask you to allow installing from this source.\n\n'
+            printf '**Web:** unzip `churn-tracker-web-*.zip` next to the server as `web/`, or use the container image, which already contains it.\n\n'
+            printf '**Server:** you need one — the app stores nothing locally. See [DEPLOYING.md](docs/DEPLOYING.md).\n\n'
+            printf 'arm64 container, minSdk 24, signed with the project release key.\n'
+          } >> release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME="${{ steps.version.outputs.name }}"
+          gh release create "v$NAME" \
+            "churn-tracker-$NAME.apk" \
+            "churn-tracker-web-$NAME.zip" \
+            --title "v$NAME" \
+            --notes-file release-notes.md \
+            --generate-notes
+
+      - name: Gradle log on failure
+        if: failure()
+        run: |
+          find app/android -name '*.log' -exec tail -50 {} + 2>/dev/null || true
