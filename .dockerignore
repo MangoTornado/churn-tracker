@@ -1,0 +1,31 @@
+# The database first: it holds password hashes and every user's churning history, and must never end
+# up in an image.
+data
+*.db
+*.db-wal
+*.db-shm
+
+# The app's own build output and dependency tree. The `web` stage runs `npm ci` and `expo export`
+# itself, so copying either in would be slower and would risk a stale bundle being shipped. The rest
+# of `app/` is needed — that stage builds it.
+app/node_modules
+app/dist
+app/web-build
+app/.expo
+
+.git
+.gitignore
+.kamal
+node_modules
+.tools
+test
+config
+Makefile
+.github
+.dockerignore
+README.md
+docs
+tsconfig.json
+*.log
+.DS_Store
+.playwright-mcp

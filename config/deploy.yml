@@ -1,0 +1,118 @@
+# Kamal 2 deployment config, set up the same way as the melisma server next door.
+# See https://kamal-deploy.org/docs/configuration for all options.
+#
+# Fill in the TODO(...) markers before the first deploy:
+#   - image          -> must match your container registry path
+#   - servers.web[]  -> the VM's IP or hostname
+#   - ssh.user       -> the user with Docker access on that VM
+#   - registry       -> your Docker Hub / GHCR / OCIR details
+#   - proxy.host     -> the hostname you will point at it
+#
+# Then: cp .kamal/secrets.sample .kamal/secrets, fill it in, and `make setup`.
+
+service: churn-tracker
+image: mangotornado/churn-tracker # TODO(registry path)
+
+servers:
+  web:
+    - 129.213.159.137 # TODO(the same host as melisma, or a different one)
+
+ssh:
+  user: ubuntu # TODO(deploy user)
+
+registry:
+  server: registry.gitlab.com # TODO(docker.io, ghcr.io, registry.cloud.oracle.com, …)
+  username:
+    - KAMAL_REGISTRY_USERNAME
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  # The host is an Oracle Ampere A1, which is ARM. Building amd64 for it produces an image the host
+  # cannot run, and a deploy that fails at the pull rather than at the build:
+  #
+  #   no matching manifest for linux/arm64/v8 in the manifest list entries
+  #
+  # Nothing here is architecture-specific — `node:24-alpine` is multi-arch and there are no native
+  # dependencies to rebuild — so this only decides which single arch to produce. On an Apple Silicon
+  # machine it also builds natively rather than under emulation.
+  arch: arm64
+
+# kamal-proxy listens on :80 on the host; put a Cloudflare Tunnel or another TLS terminator in front
+# of it, exactly as the melisma and flight-search deploys do. TLS is not terminated here.
+#
+# One hostname serves both halves: the web app at `/` and the API under `/v1`. That is what lets the
+# app need no configuration — it takes the origin it was served from as its API, so opening this
+# hostname is the entire setup. See `src/server/web.ts`.
+#
+# Note the port: 8811, not melisma's 8787. Two services on one host cannot share a container port
+# through the same proxy, and picking a distinct one is easier than remembering which is which.
+proxy:
+  ssl: false
+  app_port: 8811
+  host: churn.asu.tw # TODO(hostname)
+  healthcheck:
+    # Answers unauthenticated and carries nothing worth reading — see the Dockerfile.
+    path: /health
+    interval: 3
+
+# Password hashes and every user's complete churning history. Losing this volume means losing all of
+# it, and unlike melisma's cache there is nothing to re-fetch — this data only ever existed here.
+# `make backup` copies it down; do that on a schedule.
+volumes:
+  - "churn-tracker-data:/data"
+
+env:
+  clear:
+    NODE_ENV: production
+    CT_HOST: 0.0.0.0
+    CT_PORT: 8811
+    CT_DATA: /data/churn-tracker.db
+
+    # OFF, and this is the setting that matters most in this file.
+    #
+    # There is no email verification and no invite system, so open registration on a host reachable
+    # from the internet means anyone who finds it can create an account. The intended dance is: set
+    # this to 1, deploy, register your accounts, set it back to 0, deploy again. The server logs a
+    # warning on boot while it is on.
+    CT_OPEN_REGISTRATION: "0"
+
+    # How often to re-scrape Doctor of Credit's two "best bonuses" pages. Checked hourly against the
+    # last run, so a redeploy does not reset the clock. Requests are conditional on Last-Modified, so
+    # most days transfer nothing at all. 0 disables it and the app falls back to the snapshot baked
+    # into the image.
+    CT_REFRESH_HOURS: "24"
+
+    # The hour, in UTC, at which reminder pushes go out — one batch a day. 14:00 UTC is mid-morning
+    # in the US; set it to something civilised for wherever you are. A notification about an annual
+    # fee is not urgent to the minute and is very annoying at 3am.
+    CT_NOTIFY_HOUR_UTC: "14"
+    CT_NOTIFICATIONS: "1"
+
+    # Whether to serve the web app as well as the API.
+    #
+    # Unset here on purpose, because the default is better than anything worth writing down: serve it
+    # if a build is present. The image's last stage copies one in, so the deployed container serves
+    # both; `docker build --target api` produces one that serves only the API, with no flag to
+    # remember either way. Set this to 0 to force API-only from an image that does have a build —
+    # useful when running the app from a local dev server against this API.
+    #
+    # CT_SERVE_WEB: "0"
+
+    # On, because kamal-proxy always sets X-Forwarded-For. Off by default in the code: with nothing
+    # in front, the header is attacker-controlled and trusting it makes any per-address limiting
+    # pointless.
+    CT_TRUST_PROXY: "1"
+
+  secret:
+    # Nothing but the registry. Worth stating plainly, because it is unusual and it is the point:
+    #
+    # This server holds no third-party credential of any kind. It talks to two places — a public web
+    # page and Expo's push endpoint, which is unauthenticated — and it stores nothing that could log
+    # in to a bank. No account numbers, no aggregator token, no Plaid key. The data is dates and
+    # dollar amounts the user typed in, which is all the churning rules need.
+    #
+    # So a breach of this host is embarrassing rather than ruinous, and there is no secret here to
+    # rotate. If that ever stops being true, it is a design change and not a config change.
+    - KAMAL_REGISTRY_USERNAME
+    - KAMAL_REGISTRY_PASSWORD
