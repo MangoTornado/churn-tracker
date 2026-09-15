@@ -22,14 +22,45 @@ import { api, loadBaseUrl, setToken, type Player, type User } from './api.ts';
 const TOKEN_KEY = 'churn-tracker.token';
 const PLAYER_KEY = 'churn-tracker.playerId';
 
-/** SecureStore where it exists, AsyncStorage where it does not. See the header. */
+/**
+ * SecureStore where it exists, AsyncStorage where it does not — and never throwing.
+ *
+ * The swallowing is the important part, and it is here because of a real failure. On an
+ * unsigned build the Keychain has no `application-identifier` entitlement, so
+ * `SecItemCopyMatching` fails with -34018 and `getItemAsync` *rejects*. That rejection escaped
+ * the startup effect, `setReady(true)` never ran, and the app sat on its splash screen forever
+ * showing nothing — no error, no sign-in screen, no way out.
+ *
+ * A credential store that cannot be read means "nobody is signed in". It does not mean "do not
+ * start". The same reasoning covers a locked keychain, a failed migration, and a
+ * platform that has no secure store at all — every one of those should land on the sign-in
+ * screen rather than a black rectangle.
+ */
 const secure = {
-  get: (key: string): Promise<string | null> =>
-    Platform.OS === 'web' ? AsyncStorage.getItem(key) : SecureStore.getItemAsync(key),
-  set: (key: string, value: string): Promise<void> =>
-    Platform.OS === 'web' ? AsyncStorage.setItem(key, value) : SecureStore.setItemAsync(key, value),
-  remove: (key: string): Promise<void> =>
-    Platform.OS === 'web' ? AsyncStorage.removeItem(key) : SecureStore.deleteItemAsync(key),
+  get: async (key: string): Promise<string | null> => {
+    try {
+      return Platform.OS === 'web' ? await AsyncStorage.getItem(key) : await SecureStore.getItemAsync(key);
+    } catch {
+      return null;
+    }
+  },
+  set: async (key: string, value: string): Promise<void> => {
+    try {
+      if (Platform.OS === 'web') await AsyncStorage.setItem(key, value);
+      else await SecureStore.setItemAsync(key, value);
+    } catch {
+      // The session still works for this launch; it just will not survive a restart. Better than
+      // failing a sign-in that otherwise succeeded.
+    }
+  },
+  remove: async (key: string): Promise<void> => {
+    try {
+      if (Platform.OS === 'web') await AsyncStorage.removeItem(key);
+      else await SecureStore.deleteItemAsync(key);
+    } catch {
+      /* Nothing to do, and a sign-out must not fail. */
+    }
+  },
 };
 
 interface SessionValue {
@@ -68,21 +99,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void (async () => {
-      await loadBaseUrl();
-      const stored = await secure.get(TOKEN_KEY);
-      if (stored !== null) {
-        setToken(stored);
-        try {
-          const me = await api.me();
-          await adopt(me.user, me.players);
-        } catch {
-          // An expired or revoked token, or a server that has moved. Either way the stored token is
-          // no longer usable, and holding on to it would mean a permanently broken launch.
-          setToken(null);
-          await secure.remove(TOKEN_KEY);
+      try {
+        await loadBaseUrl();
+        const stored = await secure.get(TOKEN_KEY);
+        if (stored !== null) {
+          setToken(stored);
+          try {
+            const me = await api.me();
+            await adopt(me.user, me.players);
+          } catch {
+            // An expired or revoked token, or a server that has moved. Either way the stored token
+            // is no longer usable, and holding on to it would mean a permanently broken launch.
+            setToken(null);
+            await secure.remove(TOKEN_KEY);
+          }
         }
+      } catch {
+        // Anything unexpected during startup — a storage backend that is not there, a corrupt
+        // stored value — lands on the sign-in screen. See the note on `secure`.
+      } finally {
+        // Unconditional, and that is the whole point. `ready` is what releases the splash screen,
+        // so any path that skips it leaves the app permanently blank.
+        setReady(true);
       }
-      setReady(true);
     })();
   }, [adopt]);
 

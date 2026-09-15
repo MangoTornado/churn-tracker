@@ -7,7 +7,7 @@
  * turned out to be there all along. Neither is expensive to avoid.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -42,9 +42,27 @@ export default function RootLayout() {
     [font.monoBold]: JetBrainsMono_700Bold,
   });
 
+  /**
+   * Give up waiting for fonts after a few seconds.
+   *
+   * `useFonts` reports success and failure, but not "still going". A font that neither loads nor
+   * errors would hold the splash screen forever, and the splash screen is the one piece of UI with
+   * no way for the user to get past it — the app would be a black rectangle with no error and no
+   * exit. That is not hypothetical for this app: the same class of bug, an unresolved promise
+   * during startup, is what a missing Keychain entitlement produced.
+   *
+   * Three seconds because the fonts are bundled in the app, not fetched — if they are not ready by
+   * then they are not coming.
+   */
+  const [fontsTimedOut, setFontsTimedOut] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setFontsTimedOut(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
   // A font that fails to load is not a reason to show nothing: the app is entirely usable in the
   // system face, and a blank screen forever is much worse than slightly wrong typography.
-  const typographyReady = fontsLoaded || fontError !== null;
+  const typographyReady = fontsLoaded || fontError !== null || fontsTimedOut;
 
   return (
     <SafeAreaProvider>
@@ -72,7 +90,9 @@ function Gate({ ready }: { ready: boolean }) {
 
   useEffect(() => {
     if (!settled) return;
-    void SplashScreen.hideAsync();
+    // `.catch` because hideAsync rejects if the splash is already gone, and an unhandled
+    // rejection here would be a warning at best and a hang at worst.
+    void SplashScreen.hideAsync().catch(() => undefined);
 
     const onSignIn = segments[0] === 'sign-in';
     if (session.user === null && !onSignIn) router.replace('/sign-in');
