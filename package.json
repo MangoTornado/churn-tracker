@@ -1,0 +1,19 @@
+{
+  "name": "churn-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Credit card and bank account churning tracker — server, rules engine and data pipeline",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/server/main.ts",
+    "dev": "node --watch src/server/main.ts",
+    "test": "node --test 'test/**/*.test.ts'",
+    "refresh": "node scripts/refresh-doc.ts",
+    "flowchart": "node scripts/extract-flowchart.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

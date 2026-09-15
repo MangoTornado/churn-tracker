@@ -1,0 +1,4 @@
+[tools]
+# For the kamal gem. Node comes from the system — the server needs 24+, which is a hard floor
+# because `node:sqlite` and type stripping are both from it.
+ruby = "latest"

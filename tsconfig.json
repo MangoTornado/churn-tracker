@@ -1,0 +1,39 @@
+// Nothing in this project compiles. Node 24 runs the TypeScript directly by stripping the types,
+// so there is no build step and `typescript` is deliberately not a dependency — see package.json.
+//
+// This file is here for two other things: editors, which need it to resolve `.ts` import specifiers
+// and apply the same strictness, and `make typecheck`, which fetches tsc on demand rather than
+// installing it. Type errors are advisory to the runtime and mandatory to the author — the first
+// run caught a property that did not exist (silently making a rule always apply), scrypt's cost
+// parameters being handed to an overload that ignores them, and a duplicate key in an object
+// literal.
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024", "dom"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    // The one that matters. Node's type stripping refuses any syntax that would have to generate
+    // code — enums, namespaces, constructor parameter properties, decorators. This makes tsc reject
+    // them too, so the failure is a type error while writing rather than a crash at startup.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
+  // `app/` is the Expo project and has its own tsconfig with a completely different lib and jsx
+  // setup; typechecking it from here would fail on every JSX tag.
+  "exclude": ["node_modules", "app", "data"]
+}

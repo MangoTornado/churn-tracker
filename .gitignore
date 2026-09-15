@@ -1,0 +1,28 @@
+# The SQLite database: password hashes and every user's churning history. Never committed.
+#
+# Anchored with a leading slash, and that matters more than it looks. Unanchored, `data/` matches a
+# directory of that name at *any* depth — which silently excluded `src/core/data/`, the card catalog
+# and both bonus snapshots, i.e. the entire data layer the app depends on. `git status` says nothing
+# when a whole directory is ignored.
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+node_modules/
+.DS_Store
+*.log
+
+# Real deployment credentials. Only the sample is tracked.
+.kamal/secrets
+
+# The typecheck scratch install. Not a dependency — see the Makefile.
+/.tools/
+
+# Expo build output and caches.
+/app/.expo/
+/app/dist/
+/app/web-build/
+
+# Playwright MCP scratch output.
+/.playwright-mcp/
