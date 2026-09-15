@@ -4,11 +4,11 @@ Three artefacts come out of a release, and they are built in different places fo
 
 | | Where | Signed with | Distributed as |
 |---|---|---|---|
-| **Android APK** | GitHub Actions | the project release key | a GitHub release asset |
+| **Android APKs** | GitHub Actions | the project release key | two release assets, one per ABI |
 | **Web bundle** | GitHub Actions, and inside the container image | — | a release asset, and served by the server |
-| **iOS build** | your Mac | your Apple Developer identity | TestFlight, or a local install |
+| **iOS IPA** | GitHub Actions, on a macOS runner | nothing — it is unsigned | a release asset, for sideloading |
 
-Android and web are one `git push --tags`. iOS is not, and the next section is why.
+All three are one `git push --tags`. The iOS one is unsigned, which is the part worth understanding.
 
 ## Cutting a release
 
@@ -24,9 +24,13 @@ git tag v0.2.0
 git push origin main --tags
 ```
 
-The `Release` workflow then runs the test suite, prebuilds the native Android project, builds a signed
-APK, **verifies the signature is not the debug key**, builds the web bundle, and publishes both to a
-GitHub release with your notes plus a generated commit list.
+The `Release` workflow then runs the test suite, builds a signed APK per ABI, **verifies the signature
+is not the debug key**, builds an unsigned iOS IPA on a macOS runner, builds the web bundle, and
+publishes all four to a GitHub release with your notes plus a generated commit list.
+
+Publishing is idempotent: if the release already exists — a retry, or one cut by hand — assets are
+re-uploaded with `--clobber` and the notes replaced, rather than the whole job failing on
+`gh release create`.
 
 `workflow_dispatch` does the same thing with a version you type, for a rebuild without moving a tag.
 
@@ -100,32 +104,65 @@ export CT_ANDROID_KEY_ALIAS=churn-tracker
 export CT_ANDROID_KEY_PASSWORD="$CT_ANDROID_KEYSTORE_PASSWORD"
 
 npx expo prebuild --platform android --clean --no-install
-cd android && ./gradlew assembleRelease -PversionName=0.2.0 -PversionCode=1002
+cd android && ./gradlew assembleRelease -PctVersionName=0.2.0 -PctVersionCode=1002
 ```
 
-The APK lands at `android/app/build/outputs/apk/release/app-release.apk`. Check it:
+`ctVersionName` and `ctVersionCode`, not `versionName` and `versionCode` — Expo's template does not
+read the latter, so the plugin introduces its own names.
 
-```sh
-"$ANDROID_HOME"/build-tools/36.0.0/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
-```
+Two APKs land in `android/app/build/outputs/apk/release/`, one per ABI. `make android-verify` prints
+each one's size and signing certificate and fails if any is debug-signed; `make android-apk` does the
+whole thing including that check.
 
 ## iOS
 
-**Not in CI, and not because it was skipped.** A distributable iOS build needs an Apple Developer
-account, a distribution certificate and a provisioning profile tied to it. Those are per-developer
-credentials that cannot go in a public repository, and a workflow that always failed for want of them
-would be worse than an honest gap.
+CI builds an **unsigned IPA** on a macOS runner and attaches it to the release. That is a real,
+useful artefact: Sideloadly and AltStore install it by re-signing with the installing user's own Apple
+ID, which is how most open-source iOS apps without a developer account are distributed.
 
-What works with no account at all:
+An IPA is just a zip with the `.app` inside a top-level `Payload/` directory. A signed one adds a
+`_CodeSignature` and an embedded provisioning profile, and nothing else — which is why an unsigned one
+can be signed later by someone who has an identity.
+
+What CI cannot do is produce a **signed** build for TestFlight or the App Store. That needs a
+distribution certificate and a provisioning profile tied to an Apple Developer account, which are
+per-developer credentials that cannot go in a public repository. So that path is local, below.
+
+Everything here works with no Apple account at all:
+
+```sh
+make ios-build     # unsigned device build — what CI does
+make ios-ipa       # and package it into an IPA
+```
+
+or by hand, including the simulator variant, which is the one you can actually run:
 
 ```sh
 cd app
 npx expo prebuild --platform ios --clean --no-install
-npx pod-install
-# A simulator build — unsigned, runs in the Simulator, proves the native project is sound.
+cd ios && pod install && cd ..
+
+# For the Simulator. Needs a simulator runtime installed: Xcode > Settings > Components.
+# Without one, xcodebuild says "Found no destinations for the scheme" rather than anything
+# about a missing runtime, which is a confusing half-hour if you have not seen it before.
 xcodebuild -workspace ios/ChurnTracker.xcworkspace -scheme ChurnTracker \
-  -configuration Release -sdk iphonesimulator -derivedDataPath ios/build build
+  -configuration Release -sdk iphonesimulator -derivedDataPath ios/build \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO build
+
+xcrun simctl install booted ios/build/Build/Products/Release-iphonesimulator/ChurnTracker.app
+xcrun simctl launch booted tw.asu.churntracker
 ```
+
+> [!TIP]
+> Copy the `.app` off `/Volumes/...` before installing it. Installing straight from a non-system
+> volume makes the simulator fail resource validation with `Security error -67056`, which surfaces
+> as a broken splash image rather than as an install error.
+>
+> And sign with `CODE_SIGN_IDENTITY="-"` rather than `CODE_SIGNING_ALLOWED=NO` for a simulator build.
+> With no entitlements at all the Keychain refuses `SecItemCopyMatching` with -34018, so
+> `expo-secure-store` fails — the app now treats that as "signed out" rather than hanging, but you
+> will be testing a path real users never hit.
 
 With a paid Apple Developer account, for a device or TestFlight:
 

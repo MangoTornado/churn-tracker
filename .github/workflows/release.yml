@@ -11,9 +11,10 @@ name: Release
 # Needs four repository secrets — see docs/RELEASING.md:
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
 #
-# iOS is not here. A distributable iOS build needs an Apple Developer account and provisioning
-# profiles that cannot be checked into a public repo, so it is a local `make ios-archive` — see
-# docs/RELEASING.md. Pretending otherwise with a job that always fails would be worse than the gap.
+# iOS ships as an *unsigned* IPA for sideloading. A signed build needs an Apple Developer account and
+# provisioning profiles that cannot be checked into a public repo, so there is no TestFlight or App
+# Store build here — but an unsigned IPA is genuinely useful: Sideloadly and AltStore re-sign it with
+# the installing user's own identity. Building it needs a macOS runner, hence a separate job.
 
 on:
   push:
@@ -32,8 +33,72 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ios:
+    name: Unsigned iOS IPA
+    # macOS because Xcode. Public repos get macOS minutes; this is the only job that needs them.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install and generate the native project
+        working-directory: app
+        env:
+          EXPO_NO_TELEMETRY: '1'
+        run: |
+          npm ci
+          npx expo prebuild --platform ios --clean --no-install
+          cd ios && pod install
+
+      # A device build, not a simulator one: an IPA has to hold an arm64 iphoneos binary to install
+      # on a phone. Unsigned, so no credentials are needed and none are exposed to forks.
+      - name: Build unsigned for device
+        working-directory: app
+        run: |
+          xcodebuild -workspace ios/ChurnTracker.xcworkspace -scheme ChurnTracker \
+            -configuration Release -sdk iphoneos -derivedDataPath ios/build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package the IPA
+        working-directory: app
+        run: |
+          set -euo pipefail
+          APP=ios/build/Build/Products/Release-iphoneos/ChurnTracker.app
+          test -d "$APP"
+          # An IPA is a zip with the .app inside a top-level Payload/ directory. That is the whole
+          # format; the only thing a signed one adds is a _CodeSignature and an embedded profile.
+          rm -rf "$RUNNER_TEMP/ipa" && mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          test -f "$RUNNER_TEMP/ipa/Payload/ChurnTracker.app/main.jsbundle" \
+            || { echo "::error::no JS bundle in the app — a Release build must embed one"; exit 1; }
+          (cd "$RUNNER_TEMP/ipa" && zip -qry \
+            "$GITHUB_WORKSPACE/churn-tracker-${{ steps.version.outputs.name }}-unsigned.ipa" Payload)
+          ls -la "$GITHUB_WORKSPACE"/*.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: '*.ipa'
+          retention-days: 1
+
   release:
     name: Build, sign and publish
+    needs: [ios]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,18 +194,26 @@ jobs:
           CT_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           export CT_ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          # ctVersionName / ctVersionCode, not versionName / versionCode — Expo's template does not
+          # read the latter, so the plugin introduces its own names. See plugins/with-release-signing.js.
           ./gradlew assembleRelease \
-            -PversionName='${{ steps.version.outputs.name }}' \
-            -PversionCode='${{ steps.version.outputs.code }}' \
+            -PctVersionName='${{ steps.version.outputs.name }}' \
+            -PctVersionCode='${{ steps.version.outputs.code }}' \
             --no-daemon
-          mv app/build/outputs/apk/release/app-release.apk \
-             "$GITHUB_WORKSPACE/churn-tracker-${{ steps.version.outputs.name }}.apk"
+          # Two APKs, one per ABI — see the splits block in plugins/with-release-signing.js.
+          for abi in arm64-v8a armeabi-v7a; do
+            mv "app/build/outputs/apk/release/app-$abi-release.apk" \
+               "$GITHUB_WORKSPACE/churn-tracker-${{ steps.version.outputs.name }}-$abi.apk"
+          done
 
-      - name: Verify it really is signed, and not with the debug key
+      - name: Verify they really are signed, and not with the debug key
         run: |
-          APK="churn-tracker-${{ steps.version.outputs.name }}.apk"
+          set -euo pipefail
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BT/apksigner" verify --print-certs "$APK" | tee certs.txt
+          for APK in churn-tracker-${{ steps.version.outputs.name }}-*.apk; do
+            echo "== $APK"
+            "$BT/apksigner" verify --print-certs "$APK" | tee -a certs.txt
+          done
           # Android's debug certificate is always CN=Android Debug. Shipping one would mean nobody can
           # ever install an update over it from a different key, and it is trivially forgeable.
           if grep -qi 'CN=Android Debug' certs.txt; then
@@ -173,23 +246,43 @@ jobs:
           fi
           {
             printf '\n---\n\n'
-            printf '**Android:** download the APK and open it. Android will ask you to allow installing from this source.\n\n'
-            printf '**Web:** unzip `churn-tracker-web-*.zip` next to the server as `web/`, or use the container image, which already contains it.\n\n'
-            printf '**Server:** you need one — the app stores nothing locally. See [DEPLOYING.md](docs/DEPLOYING.md).\n\n'
-            printf 'arm64 container, minSdk 24, signed with the project release key.\n'
+            printf '### Install\n\n'
+            printf '**Android** — take `arm64-v8a` unless your phone is older than about 2017, then `armeabi-v7a`. Android will ask you to allow installing from this source.\n\n'
+            printf '**iOS** — the IPA is **unsigned**. Sideload it with Sideloadly or AltStore, which re-sign it with your own Apple ID. There is no App Store or TestFlight build.\n\n'
+            printf '**Web** — unzip `churn-tracker-web-*.zip` next to the server as `web/`, or use the container image, which already contains it.\n\n'
+            printf '**You need a server.** The app stores nothing locally and talks to one you run. See [DEPLOYING.md](docs/DEPLOYING.md).\n\n'
+            printf 'Android APKs signed with the project release key; minSdk 24. iOS arm64, minimum 16.4.\n'
           } >> release-notes.md
+
+      - name: Collect the IPA from the macOS job
+        uses: actions/download-artifact@v4
+        with:
+          name: ipa
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           NAME="${{ steps.version.outputs.name }}"
-          gh release create "v$NAME" \
-            "churn-tracker-$NAME.apk" \
-            "churn-tracker-web-$NAME.zip" \
-            --title "v$NAME" \
-            --notes-file release-notes.md \
-            --generate-notes
+          ASSETS=(
+            "churn-tracker-$NAME-arm64-v8a.apk"
+            "churn-tracker-$NAME-armeabi-v7a.apk"
+            "churn-tracker-$NAME-unsigned.ipa"
+            "churn-tracker-web-$NAME.zip"
+          )
+          # Idempotent, so re-running a failed release or adding an asset to one cut by hand both
+          # work. `create` fails if the release exists, which is the common case on a retry.
+          if gh release view "v$NAME" > /dev/null 2>&1; then
+            echo "v$NAME already exists — updating it"
+            gh release upload "v$NAME" "${ASSETS[@]}" --clobber
+            gh release edit "v$NAME" --notes-file release-notes.md
+          else
+            gh release create "v$NAME" "${ASSETS[@]}" \
+              --title "v$NAME" \
+              --notes-file release-notes.md \
+              --generate-notes
+          fi
 
       - name: Gradle log on failure
         if: failure()

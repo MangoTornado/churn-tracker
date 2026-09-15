@@ -20,7 +20,7 @@ VERSION ?= 0.1.0
 VERSION_CODE ?= 1001
 
 .PHONY: help install dev test typecheck refresh refresh-force flowchart data icons \
-        android-apk android-verify ios-build ios-archive \
+        android-apk android-verify ios-build ios-ipa ios-archive \
         docker-build docker-build-api docker-run setup deploy redeploy logs app-logs \
         console restart rollback stop backup status open-signup close-signup \
         app-install app-start app-web app-build-web app-serve-local app-typecheck
@@ -174,6 +174,17 @@ ios-build: ## Unsigned iOS device build, to prove the native project compiles
 	cd app && xcodebuild -workspace ios/ChurnTracker.xcworkspace -scheme ChurnTracker \
 	  -configuration Release -sdk iphoneos -derivedDataPath ios/build \
 	  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+ios-ipa: ios-build ## Package the unsigned device build into a sideloadable IPA
+	@# An IPA is a zip with the .app inside a top-level Payload/ directory — that is the entire
+	@# format. A signed one adds a _CodeSignature and an embedded profile and nothing else, which is
+	@# why Sideloadly and AltStore can sign this one afterwards.
+	@rm -rf /tmp/churn-tracker-ipa && mkdir -p /tmp/churn-tracker-ipa/Payload
+	cp -R app/ios/build/Build/Products/Release-iphoneos/ChurnTracker.app /tmp/churn-tracker-ipa/Payload/
+	@test -f /tmp/churn-tracker-ipa/Payload/ChurnTracker.app/main.jsbundle || \
+	  { echo "No JS bundle in the app — a Release build must embed one"; exit 1; }
+	cd /tmp/churn-tracker-ipa && zip -qry $(PWD)/churn-tracker-$(VERSION)-unsigned.ipa Payload
+	@ls -la churn-tracker-$(VERSION)-unsigned.ipa
 
 ios-archive: ## Signed iOS archive for TestFlight. Needs an Apple Developer account.
 	@# Open the workspace once and set your team under Signing & Capabilities first; Xcode-managed
