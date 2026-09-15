@@ -1,0 +1,332 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Server tests and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 24 is a hard floor, not a preference: `node:sqlite` and TypeScript type stripping are both
+      # from it, and the server uses each in its first ten lines.
+      #
+      # No `cache: npm` and no `npm ci`: the server has zero dependencies and therefore no lockfile.
+      # A cache key derived from a file that does not exist fails the step rather than skipping it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Check the Node floor is really met
+        run: make install
+
+      # Ahead of the tests, because the two things it catches are things the tests cannot: syntax
+      # Node's type stripping refuses outright (an enum, a constructor parameter property), which is
+      # a startup crash rather than a failing assertion.
+      - name: Typecheck
+        run: make typecheck
+
+      # Every timezone-sensitive date bug in this project has been an off-by-one in a UTC-vs-local
+      # constructor, and every one of them passes under TZ=UTC. Running the suite from both sides of
+      # Greenwich is what makes `dates.ts` trustworthy — a wrong 5/24 count is the one failure this
+      # app cannot have.
+      - name: Tests (UTC)
+        run: npm test
+        env:
+          TZ: UTC
+
+      - name: Tests (America/Los_Angeles)
+        run: npm test
+        env:
+          TZ: America/Los_Angeles
+
+      - name: Tests (Asia/Tokyo)
+        run: npm test
+        env:
+          TZ: Asia/Tokyo
+
+  data:
+    name: Data snapshots still parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The checked-in snapshots are the app's fallback when the network is unreachable, so a
+      # corrupted or truncated one is a silent outage rather than an error. This asserts the shape
+      # rather than the contents — the contents are asserted against fixtures in test/doc.test.ts.
+      - name: The checked-in snapshots are loadable and non-empty
+        run: |
+          node --input-type=module -e "
+            import { loadCardOffers, loadBankOffers } from './src/server/doc.ts';
+            import { CARDS } from './src/core/data/cards.ts';
+            import { FLOWCHART } from './src/core/rules/recommend.ts';
+
+            const cards = loadCardOffers();
+            const banks = loadBankOffers();
+            const fail = (message) => { console.error('::error::' + message); process.exitCode = 1; };
+
+            if (CARDS.length < 80) fail('the card catalog has shrunk to ' + CARDS.length);
+            if (cards.offers.length < 25) fail('only ' + cards.offers.length + ' card offers in the snapshot');
+            if (banks.offers.length < 30) fail('only ' + banks.offers.length + ' bank offers in the snapshot');
+            if (!FLOWCHART.sections.under524Approach) fail('the flowchart snapshot is missing its panels');
+
+            const matched = cards.offers.filter((offer) => offer.cardId !== null).length;
+            console.log('catalog ' + CARDS.length + ' cards; ' + cards.offers.length +
+              ' card offers (' + matched + ' matched); ' + banks.offers.length + ' bank offers; ' +
+              FLOWCHART.version);
+          "
+
+      # Not a failure when it drifts — Doctor of Credit edits those pages by hand and by the week —
+      # but worth surfacing on every run, because the alternative is noticing six months late that
+      # the parser stopped matching anything.
+      - name: How stale is the snapshot?
+        run: |
+          node --input-type=module -e "
+            import { loadCardOffers } from './src/server/doc.ts';
+            const fetched = loadCardOffers().fetchedAt;
+            if (!fetched) { console.log('::warning::no snapshot has ever been fetched'); process.exit(0); }
+            const days = Math.floor((Date.now() - Date.parse(fetched)) / 86400000);
+            console.log('snapshot is ' + days + ' days old (' + fetched + ')');
+            if (days > 45) console.log('::warning::bonus snapshot is ' + days + ' days old — run \`make data\`');
+          "
+
+  app:
+    name: App typechecks and bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The app is the one half of this repo with a dependency tree, so unlike the server it has a
+      # lockfile and a cache to key off.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        working-directory: app
+        run: npm ci
+
+      # Covers `src/core` too: the app maps `@core/*` at it for types, so a change to a server-side
+      # interface that the app reads shows up here rather than as a runtime shape mismatch.
+      - name: Typecheck
+        working-directory: app
+        run: npx tsc --noEmit
+
+      # The real check. Metro resolves `.ts` import specifiers, erases the type-only `@core` imports,
+      # and bundles the fonts — none of which `tsc` exercises, and all of which have broken before.
+      - name: Bundle for web
+        working-directory: app
+        run: npx expo export --platform web --output-dir dist
+
+      - name: The bundle has the routes the server expects to serve
+        working-directory: app
+        run: |
+          set -euo pipefail
+          test -f dist/index.html
+          for route in cards banks plan settings sign-in; do
+            test -f "dist/$route.html" || { echo "::error::dist/$route.html is missing"; exit 1; }
+          done
+          # No source maps: `src/server/web.ts` refuses to serve them, so shipping them is dead weight
+          # at best and a surprise at worst.
+          if find dist -name '*.map' | grep -q .; then
+            echo "::warning::the web build contains source maps; the server will not serve them"
+          fi
+          du -sh dist
+
+  image:
+    name: Container image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # arm64 only, matching config/deploy.yml. The deploy target is an Oracle Ampere A1, and
+      # building amd64 for it produces an image that fails at the pull rather than at the build:
+      #   no matching manifest for linux/arm64/v8 in the manifest list entries
+      # Building it here means that failure surfaces on a pull request instead of during a deploy.
+      #
+      # Not pushed: this job proves the Dockerfile is sound and needs no registry credentials, so it
+      # runs on pull requests from forks too.
+      # The default target is `full`, which builds the app in a throwaway stage and copies the static
+      # output into the runtime image. So this job also proves the two-stage build works end to end.
+      - name: Build for arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # And that the API-only shape still builds, since it is a documented deployment option and
+      # nothing else would exercise it.
+      - name: Build the API-only target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          platforms: linux/arm64
+          push: false
+          load: false
+          cache-from: type=gha
+
+  smoke:
+    name: The server actually boots and answers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The unit tests run against an in-memory database and never touch the filesystem or the
+      # signal handlers. This is the part they cannot cover: that a real SQLite file gets created
+      # with the right permissions, that the routes answer over a real socket, and that SIGTERM
+      # actually exits — which is what a container restart depends on.
+      - name: Boot, register, plan, shut down
+        run: |
+          set -euo pipefail
+          CT_DATA="$RUNNER_TEMP/smoke.db" \
+          CT_PORT=8811 CT_HOST=127.0.0.1 \
+          CT_OPEN_REGISTRATION=1 CT_REFRESH_HOURS=0 CT_NOTIFICATIONS=0 \
+            node src/server/main.ts > "$RUNNER_TEMP/server.log" 2>&1 &
+          SERVER_PID=$!
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8811/health > /dev/null 2>&1; then break; fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::the server exited during startup"
+              cat "$RUNNER_TEMP/server.log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:8811/health | tee /dev/stderr | grep -q '"ok":true'
+
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8811/v1/auth/register \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.com","password":"a-perfectly-fine-password"}' \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).token))")
+          test -n "$TOKEN"
+
+          curl -fsS -X POST http://127.0.0.1:8811/v1/cards \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"cardId":"discover-it","openedAt":"2018-06-01"}' > /dev/null
+
+          curl -fsS "http://127.0.0.1:8811/v1/plan?goal=travel" -H "Authorization: Bearer $TOKEN" \
+            | node -e "
+              let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                const plan = JSON.parse(s);
+                if (plan.recommendations.length === 0) { console.error('::error::the plan came back empty'); process.exit(1); }
+                if (plan.recommendations[0].card.issuer !== 'chase') {
+                  console.error('::error::under 5/24 the first recommendation should be a Chase card, got ' + plan.recommendations[0].card.name);
+                  process.exit(1);
+                }
+                console.log('phase ' + plan.phase + ', first pick ' + plan.recommendations[0].card.name);
+              });"
+
+          # An unauthenticated request to a data route must be refused. Cheap to check, and the one
+          # regression that would matter most.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8811/v1/cards)" = "401"
+
+          # The database holds password hashes, so it must not be group- or world-readable.
+          PERMS=$(stat -c '%a' "$RUNNER_TEMP/smoke.db")
+          if [ "$PERMS" != "600" ]; then
+            echo "::error::the database is mode $PERMS, expected 600"
+            exit 1
+          fi
+
+          # A container restart depends on this. A server that ignores SIGTERM gets SIGKILLed after
+          # a grace period, which risks a half-written WAL.
+          kill -TERM "$SERVER_PID"
+          for attempt in $(seq 1 15); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "shut down cleanly on SIGTERM"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the server ignored SIGTERM"
+          exit 1
+
+      - name: Server log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/server.log" || true
+
+  hosting:
+    name: One origin serves the app and the API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build the web app
+        working-directory: app
+        run: |
+          npm ci
+          npx expo export --platform web --output-dir dist
+
+      # The arrangement the deployed container uses, reproduced without Docker: the app served at `/`
+      # and the API under `/v1`, from one process on one port. That is what lets the app take its own
+      # origin as the API and need no configuration — so it is worth asserting rather than assuming.
+      - name: Serve both halves and check each
+        run: |
+          set -euo pipefail
+          CT_DATA="$RUNNER_TEMP/hosting.db" \
+          CT_WEB_DIR="$PWD/app/dist" \
+          CT_PORT=8811 CT_HOST=127.0.0.1 \
+          CT_REFRESH_HOURS=0 CT_NOTIFICATIONS=0 \
+            node src/server/main.ts > "$RUNNER_TEMP/hosting.log" 2>&1 &
+          SERVER_PID=$!
+
+          for attempt in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8811/health > /dev/null 2>&1 && break
+            kill -0 "$SERVER_PID" 2>/dev/null || { cat "$RUNNER_TEMP/hosting.log"; exit 1; }
+            sleep 1
+          done
+
+          # The app at the root, with no token.
+          curl -fsS http://127.0.0.1:8811/ | grep -qi '<!doctype html'
+          # A route with no file extension resolves to its generated HTML.
+          curl -fsS http://127.0.0.1:8811/cards | grep -qi '<!doctype html'
+          # A deep link the server has no file for still boots the app.
+          curl -fsS http://127.0.0.1:8811/card/some-uuid | grep -qi '<!doctype html'
+          # `/health` stays JSON, and reports that it is serving the app.
+          curl -fsS http://127.0.0.1:8811/health | grep -q '"servesWebApp":true'
+          # The API still demands a token, and a static file cannot shadow it.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8811/v1/cards)" = "401"
+
+          # Traversal. The database sits one directory above the web root in the real container.
+          for path in '/../package.json' '/%2e%2e%2fpackage.json' '/../src/server/db.ts' '/.env'; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8811$path")
+            test "$code" = "404" || { echo "::error::$path answered $code, expected 404"; exit 1; }
+          done
+
+          echo "one origin, both halves, nothing escaping the web root"
+          kill -TERM "$SERVER_PID"
+
+      - name: Server log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/hosting.log" || true

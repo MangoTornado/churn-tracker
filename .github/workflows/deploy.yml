@@ -1,0 +1,136 @@
+name: Deploy
+
+# Ships the server to the Kamal host.
+#
+# Manual by default, and that is deliberate rather than lazy. The volume on that host holds the only
+# copy of everybody's churning history, so a deploy is a thing to decide to do — not something a
+# merge does on your behalf while you are looking elsewhere. Flip `push.branches` on below if you
+# would rather have it automatic.
+#
+# One deploy ships both halves: the image's final stage builds the web app and copies it in, so the
+# API and the app go out together on one hostname. See the Dockerfile.
+#
+# Needs four repository secrets — see docs/DEPLOYING.md:
+#   KAMAL_REGISTRY_USERNAME, KAMAL_REGISTRY_PASSWORD, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Deploy without running the test suite first (not recommended)'
+        type: boolean
+        default: false
+  # push:
+  #   branches: [main]
+
+concurrency:
+  # Never two deploys at once. Kamal takes a lock on the host and the second would fail anyway, but
+  # it would fail partway through — and `cancel-in-progress` would be worse still, killing a deploy
+  # between booting the new container and retiring the old one.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests
+    if: ${{ !inputs.skip_tests }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: make typecheck
+      - run: npm test
+        env:
+          TZ: UTC
+
+      # The app too, because the image builds it: a type error in the app would otherwise surface
+      # eight minutes later as a failed Docker stage, after the registry push has already started.
+      - name: Typecheck the app
+        working-directory: app
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+  deploy:
+    name: Kamal deploy
+    needs: [test]
+    # `always()` so a skipped test job does not skip the deploy with it — a `needs` on a skipped job
+    # is neither success nor failure, and the default would refuse to run. The explicit check keeps
+    # a *failed* test job blocking.
+    if: ${{ always() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Kamal is a gem, which is the only reason Ruby is here. Same as mise.toml locally.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Install Kamal
+        run: gem install kamal -v '~> 2.0' --no-document
+
+      # QEMU because the target is an Oracle Ampere A1 and the runner is x86. Building amd64 for an
+      # arm64 host produces an image that fails at the pull rather than at the build, which is a much
+      # more confusing failure than a slow build.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Trust the deploy host
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::SSH_KNOWN_HOSTS is not set. Get it with 'ssh-keyscan <host>' — see docs/DEPLOYING.md."
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # Pinned rather than `StrictHostKeyChecking=no`. Turning the check off would let anything
+          # answering on that address receive an SSH agent connection and a registry login.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Load the deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy
+        env:
+          KAMAL_REGISTRY_USERNAME: ${{ secrets.KAMAL_REGISTRY_USERNAME }}
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.KAMAL_REGISTRY_PASSWORD }}
+        run: |
+          if [ -z "$KAMAL_REGISTRY_PASSWORD" ]; then
+            echo "::error::KAMAL_REGISTRY_PASSWORD is not set. See docs/DEPLOYING.md."
+            exit 1
+          fi
+          # Kamal reads `.kamal/secrets` for the `env.secret` list in config/deploy.yml. In CI the
+          # values are already in the environment, so the file just forwards them — writing them out
+          # literally would put them in a file and in the log.
+          mkdir -p .kamal
+          {
+            echo 'KAMAL_REGISTRY_USERNAME=$KAMAL_REGISTRY_USERNAME'
+            echo 'KAMAL_REGISTRY_PASSWORD=$KAMAL_REGISTRY_PASSWORD'
+          } > .kamal/secrets
+          kamal deploy --verbose
+
+      - name: Check what is actually running
+        # A green `kamal deploy` means the container started and passed its healthcheck. This asks
+        # the server itself, which is the difference between "it booted" and "it works".
+        run: |
+          kamal app exec --reuse \
+            "node -e \"fetch('http://127.0.0.1:8811/health').then(r=>r.json()).then(j=>{console.log(JSON.stringify(j,null,2)); if(!j.ok) process.exit(1); if(j.registrationOpen) console.log('::warning::registration is OPEN on the deployed server');})\""
+
+      - name: Logs on failure
+        if: failure()
+        run: kamal app logs --lines 200 || true
+
+      - name: Remove the forwarding secrets file
+        if: always()
+        run: rm -f .kamal/secrets
