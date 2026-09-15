@@ -1,0 +1,20 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // Imports carry their `.ts` / `.tsx` extension, matching the server side of this repo. Metro
+    // resolves an explicit extension directly, and it means a path reads the same in both halves of
+    // the project — the server has no choice, since Node requires it.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      // Types only, and that constraint is load-bearing. The server owns the rules engine and
+      // computes every derived value, so the app needs the *shapes* — CardAccount, Verdict, Plan —
+      // and none of the logic. Written as `import type`, these imports are erased before Metro ever
+      // sees them, so nothing outside this directory has to be bundled or watched.
+      "@core/*": ["../src/core/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
+}
