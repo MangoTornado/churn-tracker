@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="t d">
+  <title id="t">churn-tracker</title>
+  <desc id="d">The 5/24 slot rail at 3/24: five identical cells, three spent (solid violet, the colour of a date) and two open (hollow mint, the colour of "you can"). The gaps are wide because a slot is a discrete thing you spend.</desc>
+
+  <!--
+    Geometry. Five cells, 92 x 300, pitch 128 (gap 36 = 0.39 of a cell), on a common baseline.
+    Row is 604 x 300 centred on 512,512 -> extreme corner at radius 337.2 with square corners and
+    333 with the 12px radii, inside the Android adaptive-icon safe circle (r = 337.9 = 66% / 2).
+    No fonts, no gradients, no filters, no external references. Palette: ground/when/go only.
+  -->
+  <rect width="1024" height="1024" fill="#17161C"/>
+
+  <!-- Spent slots. Violet is "a date": each of these is the month that slot comes back. -->
+  <g fill="#B9A0F5">
+    <rect x="210" y="362" width="92" height="300" rx="12"/>
+    <rect x="338" y="362" width="92" height="300" rx="12"/>
+    <rect x="466" y="362" width="92" height="300" rx="12"/>
+  </g>
+
+  <!-- Open slots. Mint is "you can". Cut out rather than outlined, so the cell is really empty. -->
+  <g fill="#7DD8A6" fill-rule="evenodd">
+    <path d="M606 362 H674 A12 12 0 0 1 686 374 V650 A12 12 0 0 1 674 662 H606 A12 12 0 0 1 594 650 V374 A12 12 0 0 1 606 362 Z
+             M620 384 H660 A4 4 0 0 1 664 388 V636 A4 4 0 0 1 660 640 H620 A4 4 0 0 1 616 636 V388 A4 4 0 0 1 620 384 Z"/>
+    <path d="M734 362 H802 A12 12 0 0 1 814 374 V650 A12 12 0 0 1 802 662 H734 A12 12 0 0 1 722 650 V374 A12 12 0 0 1 734 362 Z
+             M748 384 H788 A4 4 0 0 1 792 388 V636 A4 4 0 0 1 788 640 H748 A4 4 0 0 1 744 636 V388 A4 4 0 0 1 748 384 Z"/>
+  </g>
+</svg>

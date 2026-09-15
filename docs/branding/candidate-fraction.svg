@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>churn-tracker</title>
+  <desc>5/ - the numerator and the solidus. JetBrains Mono ExtraBold, converted to outlines.</desc>
+
+  <!--
+    churn-tracker app icon.
+
+    The mark is "5/". The community writes 5/24 and does not mean a statistic by it, it means
+    a position: how many of your five Chase slots are spent, and therefore when the next one
+    comes back. Every rule in this app has that shape, and every answer it gives is a date.
+
+    The denominator is dropped. Rendered and measured rather than assumed: the full 5/24 puts
+    four shapes inside Android's 66% safe circle, which on a 48px icon is 32px across, and the
+    24 arrives as two grey smudges. A churner completes 5/ unprompted. Nobody completes a
+    smudge.
+
+    Numeral in #F2EFF5, the reading colour: the count, which is yours.
+    Solidus in #B9A0F5, which in this app means "a date" and nothing else: what is on the far
+    side of the slash is a window of time, and the answer it produces is a date.
+
+    Both glyphs are JetBrains Mono ExtraBold - the app's data face, the face it sets 5/24 in -
+    lifted from the .ttf and written here as outlines, so this file needs no font at any size.
+
+    Two departures from setting it as text, both forced by the 66% crop:
+      - JetBrains Mono's solidus is 940 units tall against a 730 cap, so as text the solidus
+        sets the height and the numeral is left at a 17px cap on a 48px icon. The numeral is
+        scaled to stand exactly as tall as the solidus instead. That costs no height at all -
+        the solidus was already the tall one - and buys 19% of numeral.
+      - Which leaves the solidus lighter than the numeral it now matches. It is a plain
+        parallelogram in the font, so it is redrawn at the numeral's weight with the
+        typeface's own lean (0.367) and horizontal terminal cuts kept exactly: the two slanted
+        edges keep their slope, only the offset between them changes.
+
+    Geometry: the outermost ink - the numeral's top-left corner and the solidus's top-right -
+    sits 331.1 from centre against the 337.9 safe radius, so the adaptive-icon crop reaches
+    nothing. At a 48px render the numeral stands 18.71px with 3.4px of clear ground between
+    the two glyphs.
+  -->
+
+  <rect width="1024" height="1024" fill="#17161C"/>
+
+  <g transform="translate(512 512) scale(0.42472) translate(-698.3 -370)">
+    <!-- numeral five -->
+    <path fill="#F2EFF5" transform="translate(0 -100) scale(1.27027)"
+          d="M299 740 Q190 740 126 686 Q62 632 60 540 L210 540 Q212 573 235 591.5 Q258 610 299 610 Q343 610 366.5 587.5 Q390 565 390 525 L390 454 Q390 413 367 391.5 Q344 370 299 370 Q272 370 252.5 377.5 Q233 385 222 400 L77 400 L82 0 L513 0 L513 135 L223 135 L221 325 L252 325 L220 350 Q220 304 255.5 277.5 Q291 251 352 251 Q441 251 490.5 304.5 Q540 358 540 454 L540 525 Q540 625 476 682.5 Q412 740 299 740 Z"/>
+    <!-- solidus -->
+    <path fill="#B9A0F5" transform="translate(728.49 0)"
+          d="M50 840 L246.9 840 L591.9 -100 L395 -100 Z"/>
+  </g>
+</svg>

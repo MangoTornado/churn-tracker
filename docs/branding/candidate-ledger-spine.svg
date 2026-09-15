@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  churn-tracker app icon — "the ledger spine"
+
+  Every screen in this app is laid out as a ledger: one fixed column of dates in violet mono
+  (theme.ts, GUTTER = 62) with the entries flowing right of it. This is that structure reduced
+  until only the rhythm is left.
+
+  The four entries are exactly the same length. That is the whole trick: if the lengths varied it
+  would be a bar chart or four lines of text, so the only thing left to vary is WHERE each one
+  sits. Two deadlines within a fortnight of each other, then a long stretch with nothing due, then
+  two more further apart — that is what a real churning calendar looks like, and unequal spacing is
+  what a bulleted list never has.
+
+  Colour is the app's own vocabulary, unchanged. Violet is a date and is the ground note here.
+  Coral is the one that is already costing money. Mint is the date the wall lifts, which is why the
+  spine itself turns mint from that point down: past there, the road is clear.
+
+  Geometry only — no type, so no font to be missing. Nothing crosses the rule, because a rule with
+  arms on it reads as the letter E at any size (three earlier drafts proved it); the entries sit in
+  the gutter's width instead, which is also what they do in the app.
+
+  Everything lies inside the circle of radius 338 about (512,512) — Android's adaptive-icon 66%
+  safe zone. Furthest point is 328 from centre.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#17161C"/>
+
+  <!-- the spine: time, running on past the last thing anyone has a date for -->
+  <rect x="326" y="244" width="74" height="544" rx="37" fill="#B9A0F5"/>
+  <!-- from the date the wall lifts, downward: clear -->
+  <path d="M326 700 L400 700 L400 751 A37 37 0 0 1 326 751 Z" fill="#7DD8A6"/>
+
+  <!-- an annual fee already posted; the ~30-day window to reverse it is open -->
+  <rect x="464" y="276" width="272" height="54" rx="27" fill="#E8705A"/>
+  <!-- a minimum spend closing a fortnight later.        gap: 46 -->
+  <rect x="464" y="376" width="272" height="54" rx="27" fill="#B9A0F5"/>
+  <!-- then months of nothing, which is most of churning. gap: 132 -->
+  <rect x="464" y="562" width="272" height="54" rx="27" fill="#B9A0F5"/>
+  <!-- and a 5/24 slot comes back.                        gap: 84 -->
+  <rect x="464" y="700" width="272" height="54" rx="27" fill="#7DD8A6"/>
+</svg>

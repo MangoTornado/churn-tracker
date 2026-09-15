@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  churn-tracker app icon — "the card, subverted"
+
+  The 1.586:1 rectangle is the one shape nobody has to be taught. This icon borrows it and takes
+  the payment out. Where a card carries a magnetic stripe — one band, edge to edge, the only
+  feature on the back — this one carries the 5/24 rail: the same band, cut into five discrete
+  slots. Four are spent, in the violet the app reserves for *a date*; the fifth is mint, which in
+  this app means *you can*. So the object is still unmistakably a credit card, but the only thing
+  printed on it is when. It is drawn at 4/24 with one slot to spend, the state the README opens on.
+
+  Why the stripe and not a chip or a clock: a chip is too small to survive 48px, and a clock is the
+  glyph every finance app already owns. The stripe is the one place on a card where a single
+  horizontal band is expected, which is exactly the shape a queue of returning slots wants to be.
+  The cells are deliberately not contiguous, for the same reason as in SlotRail.tsx — a slot is a
+  discrete thing you spend, and the gaps say so.
+
+  Geometry only: no type, no font dependency, no gradient, no shadow. Palette is theme.ts
+  unchanged — ground #17161C, surface #221F29, text #F2EFF5 for the card's edge (the card is an
+  object, not a date, so it does not get to be violet), when #B9A0F5, go #7DD8A6.
+
+  Everything is snapped to the 48px device grid (1024/48 = 21.3333 units per pixel), because the
+  whole mark lives or dies on whether you can still count five cells at that size: each cell is
+  exactly 4px wide and each gap exactly 1px, landing on whole pixels with no antialiasing to
+  smear them together. The card is 554.667x349.727 (1.58600:1) centred on 512,512, so even its
+  unrounded corners sit 328 from centre — inside the 338 radius of Android's adaptive-icon
+  safe circle.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>churn-tracker — a credit card whose magnetic stripe is the 5/24 rail</title>
+  <rect width="1024" height="1024" fill="#17161C"/>
+
+  <!-- the card's face -->
+  <rect x="234.6667" y="337.1366" width="554.6667" height="349.7268" rx="34" fill="#221F29"/>
+
+  <!-- the stripe, cut into slots. Four spent, each one a date you are waiting on.
+       The end cells run under the card's edge so the band reads as one stripe crossing the card. -->
+  <g fill="#B9A0F5">
+    <rect x="244.0000" y="405.3333" width="97.3333" height="213.3333" rx="10"/>
+    <rect x="362.6667" y="405.3333" width="85.3333" height="213.3333" rx="10"/>
+    <rect x="469.3333" y="405.3333" width="85.3333" height="213.3333" rx="10"/>
+    <rect x="576.0000" y="405.3333" width="85.3333" height="213.3333" rx="10"/>
+  </g>
+
+  <!-- and one open: the slot you can actually spend -->
+  <rect x="682.6667" y="405.3333" width="97.3333" height="213.3333" rx="10" fill="#7DD8A6"/>
+
+  <!-- the card's edge, drawn last so the stripe ends are flush against it -->
+  <rect x="245.3333" y="347.8033" width="533.3333" height="328.3934" rx="23.3333"
+        fill="none" stroke="#F2EFF5" stroke-width="21.3333"/>
+</svg>
